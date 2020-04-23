@@ -11,7 +11,84 @@ _yc_no_of_yarn_args() {
 }
 
 _yc_list_cached_modules() {
-  ls ~/.npm 2>/dev/null
+  local term="${words[$CURRENT]}"
+
+  case $term in
+    '.'* | '/'* | '~'* | '-'* | '_'*)
+      return
+  esac
+
+  # enable cache if the user hasn't explicitly set it
+  local use_cache
+  zstyle -s ":completion:${curcontext}:" use-cache use_cache
+  if [[ -z "$use_cache" ]]; then
+    zstyle ":completion:${curcontext}:" use-cache on
+  fi
+
+  # set default cache policy if the user hasn't set it
+  local update_policy
+  zstyle -s ":completion:${curcontext}:" cache-policy update_policy
+  if [[ -z "$update_policy" ]]; then
+    zstyle ":completion:${curcontext}:" cache-policy _yc_list_cached_modules_policy
+  fi
+
+  local hash=$(echo "$term" | md5sum)
+  cache_name="yc_cached_modules_$hash"
+
+  if _cache_invalid $cache_name  || ! _retrieve_cache $cache_name; then
+    if [[ -z "$term" ]]; then
+      _modules=$(_yc_list_cached_modules_no_cache)
+    else
+      _modules=$(_yc_list_search_modules)
+    fi
+
+    if [ $? -eq 0 ]; then
+      _store_cache $cache_name _modules
+    else
+      # some error occurred, the user is probably not logged in
+      # set _modules to an empty string so that no completion is attempted
+      _modules=""
+    fi
+  else
+    _retrieve_cache $cache_name
+  fi
+  echo $_modules
+}
+
+_yc_list_cached_modules_policy() {
+  # rebuild if cache is more than an hour old
+  local -a oldp
+  # See http://zsh.sourceforge.net/Doc/Release/Expansion.html#Glob-Qualifiers
+  oldp=( "$1"(Nmh+1) )
+  (( $#oldp ))
+}
+
+_yc_list_search_modules() {
+  local term="${words[$CURRENT]}"
+  [[ ! -z "$term" ]] && NPM_CONFIG_SEARCHLIMIT=1000 npm search --no-description --parseable "$term" 2>/dev/null | awk '{print $1}'
+  _yc_list_cached_modules_no_cache
+}
+
+_yc_list_cached_modules_no_cache() {
+  local cache_dir="$(npm config get cache)/_cacache"
+  export NODE_PATH="${NODE_PATH}:$(npm prefix -g)/lib/node_modules:$(npm prefix -g)/lib/node_modules/npm/node_modules"
+  node --eval="require('cacache');" &>/dev/null || npm install -g cacache &>/dev/null
+  if [ -d "${cache_dir}" ]; then
+    node <<CACHE_LS 2>/dev/null
+const cacache = require('cacache');
+cacache.ls('${cache_dir}').then(cache => {
+    const packages = Object.values(cache).forEach(entry => {
+        const id = ((entry || {}).metadata || {}).id;
+        if (id) {
+            console.log(id.substr(0, id.lastIndexOf('@')));
+        }
+    });
+});
+CACHE_LS
+  else
+    # Fallback to older cache location ... i think node < 10
+    ls --color=never ~/.npm 2>/dev/null
+  fi
 }
 
 _yc_recursively_look_for() {
